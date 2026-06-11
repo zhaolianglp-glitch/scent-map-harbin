@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>七维地图 - 哈尔滨气味地图</title>
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <script src="https://unpkg.com/deck.gl@9.3/dist.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { 
+      font-family: 'Noto Sans CJK SC', 'WenQuanYi Micro Hei', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      overflow: hidden; 
+      background: #0a0a14;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    #map-container { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; }
+    #base-map { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+    #deck-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; }
+    /* 让 deck canvas 上的点击穿透到地图 */
+    
+    /* 顶部标题 */
+    #title-bar {
+      position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+      z-index: 100; background: rgba(10,10,20,0.75);
+      backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(255,255,255,0.12); border-radius: 50px;
+      padding: 10px 28px; display: flex; align-items: center; gap: 10px;
+    }
+    #title-bar h1 { font-size: 18px; font-weight: 600; color: #fff; letter-spacing: 2px; white-space: nowrap; }
+    #title-bar .dot {
+      width: 8px; height: 8px; border-radius: 50%; background: #ff6b9d;
+      animation: pulse-dot 2s ease-in-out infinite;
+    }
+    @keyframes pulse-dot {
+      0%, 100% { box-shadow: 0 0 6px #ff6b9d, 0 0 12px #ff6b9d; }
+      50% { box-shadow: 0 0 12px #ff6b9d, 0 0 24px #ff6b9d; }
+    }
+
+    /* 底部提示 */
+    #hint {
+      position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%);
+      z-index: 100; color: rgba(255,255,255,0.7); font-size: 14px;
+      background: rgba(10,10,20,0.65); backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 30px; padding: 10px 24px; pointer-events: none;
+      animation: hint-fade 3s ease-in-out infinite;
+    }
+    @keyframes hint-fade { 0%,100%{opacity:0.5;} 50%{opacity:1;} }
+
+    /* 输入面板 */
+    #input-panel {
+      position: fixed; bottom: 120px; left: 50%;
+      transform: translateX(-50%) translateY(20px); z-index: 200;
+      background: rgba(20,20,40,0.92); backdrop-filter: blur(30px);
+      -webkit-backdrop-filter: blur(30px); border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 24px; padding: 20px 24px; display: none;
+      flex-direction: column; gap: 12px; min-width: 340px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+      transition: opacity 0.3s, transform 0.3s;
+    }
+    #input-panel.active { display: flex; }
+    #input-panel .loc-label { color: rgba(255,255,255,0.5); font-size: 12px; text-align: center; }
+    #input-panel textarea {
+      width: 100%; background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.15); border-radius: 14px;
+      color: #fff; font-size: 15px; padding: 12px 14px;
+      resize: none; outline: none; font-family: inherit; height: 56px;
+      transition: border-color 0.3s;
+    }
+    #input-panel textarea:focus { border-color: rgba(255,255,255,0.4); }
+    #input-panel .char-count { color: rgba(255,255,255,0.35); font-size: 11px; text-align: right; }
+    #input-panel .btn-row { display: flex; gap: 10px; }
+    #input-panel button {
+      flex: 1; padding: 12px; border: none; border-radius: 14px;
+      font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit;
+      transition: all 0.3s;
+    }
+    #input-panel .btn-confirm {
+      background: linear-gradient(135deg, #ff6b9d, #c44dff); color: #fff; flex: 2;
+    }
+    #input-panel .btn-confirm:hover { transform: scale(1.02); box-shadow: 0 8px 25px rgba(255,107,157,0.4); }
+    #input-panel .btn-confirm:disabled { opacity: 0.4; cursor: not-allowed; transform: none; box-shadow: none; }
+    #input-panel .btn-cancel { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.7); }
+    #input-panel .btn-cancel:hover { background: rgba(255,255,255,0.15); }
+
+    #ai-status {
+      position: fixed; top: 100px; left: 50%; transform: translateX(-50%);
+      z-index: 300; color: #fff; font-size: 13px;
+      background: rgba(0,0,0,0.7); padding: 8px 20px;
+      border-radius: 20px; display: none;
+    }
+
+    #zoom-info {
+      position: fixed; top: 90px; right: 20px; z-index: 100;
+      color: rgba(255,255,255,0.35); font-size: 11px;
+    }
+
+    #legend {
+      position: fixed; bottom: 40px; right: 20px; z-index: 100;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    #legend .legend-item { display: flex; align-items: center; gap: 6px; font-size: 10px; color: rgba(255,255,255,0.35); }
+    #legend .legend-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+    }
+
+    @media (max-width: 480px) {
+      #input-panel { min-width: 280px; padding: 16px; }
+      #title-bar h1 { font-size: 15px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="map-container">
+    <div id="base-map"></div>
+  </div>
+  
+  <div id="title-bar">
+    <div class="dot"></div>
+    <h1>七维地图 · 哈尔滨</h1>
+  </div>
+
+  <div id="hint">点击地图任意位置，记录你闻到的气味</div>
+  <div id="zoom-info"></div>
+
+  <div id="legend">
+    <div class="legend-item"><span class="legend-dot" style="background:#ff6b9d;box-shadow:0 0 6px #ff6b9d"></span> 新标记</div>
+    <div class="legend-item"><span class="legend-dot" style="background:rgba(255,255,255,0.3);box-shadow:0 0 4px rgba(255,255,255,0.3)"></span> 消散中</div>
+  </div>
+
+  <div id="ai-status"></div>
+
+  <div id="input-panel">
+    <div class="loc-label" id="loc-label">选中位置：—</div>
+    <textarea id="scent-input" placeholder="描述气味或心情…（最多20字）" maxlength="20"></textarea>
+    <div class="char-count"><span id="char-count">0</span>/20</div>
+    <div class="btn-row">
+      <button class="btn-cancel" id="btn-cancel">取消</button>
+      <button class="btn-confirm" id="btn-confirm" disabled>放置气味</button>
+    </div>
+  </div>
+
+  <script>
+    // ============================================================
+    // 全局状态
+    // ============================================================
+    const HARBIN_CENTER = [126.634, 45.757];
+    const DEFAULT_ZOOM = 12;
+    const MAX_SCENT_AGE = 3600000; // 1小时
+    const CLEANUP_INTERVAL = 30000; // 30秒清理一次
+
+    let pendingLngLat = null;
+    let scentPoints = [];
+    let animationId = null;
+    let deckInstance = null;
+
+    // ============================================================
+    // 文字 → 颜色：关键词 + 哈希混合算法
+    // ============================================================
+    const KEYWORD_COLORS = {
+      // 花香
+      '丁香': [0.80, 0.50, 0.85], '花': [0.83, 0.55, 0.80], '玫瑰': [0.95, 0.30, 0.50],
+      '茉莉': [0.85, 0.60, 0.90], '薰衣草': [0.75, 0.45, 0.80], '香': [0.78, 0.50, 0.80],
+      // 食物
+      '烤红肠': [0.08, 0.82, 0.50], '红肠': [0.08, 0.82, 0.50], '烤': [0.07, 0.85, 0.55],
+      '面包': [0.12, 0.70, 0.50], '咖啡': [0.08, 0.40, 0.35], '奶茶': [0.10, 0.55, 0.65],
+      '锅包肉': [0.09, 0.75, 0.55], '冰棍': [0.55, 0.60, 0.75], '马迭尔': [0.56, 0.55, 0.78],
+      '好吃': [0.10, 0.80, 0.60], '甜': [0.95, 0.55, 0.70], '辣': [0.00, 0.90, 0.55],
+      '酸': [0.15, 0.75, 0.55], '美味': [0.08, 0.78, 0.55],
+      // 哈尔滨特色
+      '格瓦斯': [0.13, 0.60, 0.50], '大列巴': [0.12, 0.65, 0.48],
+      '冰雕': [0.55, 0.30, 0.82], '雪糕': [0.56, 0.55, 0.76],
+      '冬': [0.55, 0.20, 0.82], '夏': [0.15, 0.75, 0.62],
+      // 江/自然
+      '松花江': [0.55, 0.50, 0.70], '江': [0.56, 0.45, 0.72], '风': [0.58, 0.35, 0.75],
+      '雨': [0.58, 0.30, 0.65], '雪': [0.60, 0.15, 0.90], '冰': [0.55, 0.40, 0.85],
+      '树': [0.30, 0.65, 0.40], '草': [0.28, 0.70, 0.45], '太阳': [0.13, 0.85, 0.70],
+      '空气': [0.55, 0.20, 0.85], '新鲜': [0.50, 0.50, 0.80], '天空': [0.56, 0.35, 0.78],
+      '云': [0.57, 0.20, 0.82], '晚霞': [0.05, 0.75, 0.62],
+      // 情绪
+      '开心': [0.14, 0.90, 0.65], '幸福': [0.95, 0.85, 0.65], '安静': [0.58, 0.25, 0.70],
+      '舒服': [0.50, 0.55, 0.75], '怀旧': [0.75, 0.35, 0.50], '热闹': [0.05, 0.90, 0.60],
+      '冷': [0.58, 0.25, 0.80], '温暖': [0.10, 0.80, 0.60], '感动': [0.90, 0.70, 0.60],
+      '浪漫': [0.88, 0.60, 0.70], '孤独': [0.62, 0.20, 0.45], '想念': [0.70, 0.30, 0.55],
+      '惊喜': [0.20, 0.90, 0.62], '平静': [0.55, 0.22, 0.68],
+      // 负面
+      '臭': [0.20, 0.20, 0.30], '脏': [0.15, 0.15, 0.35], '难闻': [0.18, 0.18, 0.30],
+      '尾气': [0.12, 0.10, 0.35], '烟': [0.10, 0.10, 0.40], '垃圾': [0.15, 0.15, 0.25],
+      // 建筑/城市
+      '索菲亚': [0.13, 0.35, 0.50], '教堂': [0.13, 0.30, 0.48],
+      '中央大街': [0.12, 0.40, 0.52], '老道外': [0.10, 0.35, 0.44],
+      '夜市': [0.06, 0.88, 0.58], '早市': [0.12, 0.72, 0.60],
+    };
+
+    const POSITIVE_WORDS = '好|美|喜欢|爱|幸福|开心|快乐|温暖|舒服|新鲜|好吃|香|甜|棒|赞|妙|绝|惬意|治愈|惊喜|浪漫|温柔|美好|享受'.split('|');
+    const NEGATIVE_WORDS = '臭|脏|难闻|讨厌|恶心|难受|垃圾|差|坏|糟糕|难吃|苦|刺鼻|呛|熏|油腻'.split('|');
+
+    function getSentiment(text) {
+      let pos = 0, neg = 0;
+      for (const w of POSITIVE_WORDS) if (text.includes(w)) pos++;
+      for (const w of NEGATIVE_WORDS) if (text.includes(w)) neg++;
+      if (pos > neg) return 'positive';
+      if (neg > pos) return 'negative';
+      return 'neutral';
+    }
+
+    function hexToRgb(hex) {
+      const r = parseInt(hex.slice(1,3), 16) / 255;
+      const g = parseInt(hex.slice(3,5), 16) / 255;
+      const b = parseInt(hex.slice(5,7), 16) / 255;
+      return [r, g, b];
+    }
+
+    function rgbToHex(r, g, b) {
+      return '#' + [r,g,b].map(x => Math.round(Math.max(0,Math.min(1,x))*255).toString(16).padStart(2,'0')).join('');
+    }
+
+    function hslToRgb(h, s, l) {
+      h = ((h%1)+1)%1;
+      if(s===0) return [l,l,l];
+      const hue2rgb = (p,q,t) => { if(t<0)t+=1; if(t>1)t-=1; if(t<1/6)return p+(q-p)*6*t; if(t<1/2)return q; if(t<2/3)return p+(q-p)*(2/3-t)*6; return p; };
+      const q = l<0.5 ? l*(1+s) : l+s-l*s;
+      const p = 2*l - q;
+      return [hue2rgb(p,q,h+1/3), hue2rgb(p,q,h), hue2rgb(p,q,h-1/3)];
+    }
+
+    function textToColor(text) {
+      // 确定性哈希 → 基础色
+      let hash = 0;
+      for (let i = 0; i < text.length; i++) {
+        hash = ((hash << 5) - hash) + text.charCodeAt(i);
+        hash |= 0;
+      }
+      
+      let hue = ((hash % 360) + 360) % 360 / 360;
+      let sat = 0.45 + (Math.abs(hash % 100) / 100) * 0.3;
+      let light = 0.55 + (Math.abs((hash >> 8) % 100) / 100) * 0.15;
+
+      // 关键词匹配
+      let matchedHue = 0, matchedSat = 0, matchedLight = 0, totalWeight = 0;
+      for (const [keyword, [kh, ks, kl]] of Object.entries(KEYWORD_COLORS)) {
+        if (text.includes(keyword)) {
+          const weight = keyword.length;
+          matchedHue += kh * weight;
+          matchedSat += ks * weight;
+          matchedLight += kl * weight;
+          totalWeight += weight;
+        }
+      }
+
+      if (totalWeight > 0) {
+        hue = matchedHue / totalWeight * 0.65 + hue * 0.35;
+        sat = matchedSat / totalWeight * 0.65 + sat * 0.35;
+        light = matchedLight / totalWeight * 0.65 + light * 0.35;
+      }
+
+      // 情感调整
+      const sentiment = getSentiment(text);
+      if (sentiment === 'positive') { sat = Math.min(1, sat + 0.15); light = Math.min(0.85, light + 0.08); }
+      if (sentiment === 'negative') { sat = Math.max(0.1, sat - 0.10); light = Math.max(0.2, light - 0.12); }
+
+      sat = Math.max(0.15, Math.min(1, sat));
+      light = Math.max(0.22, Math.min(0.85, light));
+
+      const [r, g, b] = hslToRgb(hue, sat, light);
+      return {
+        hex: rgbToHex(r, g, b),
+        rgb: [r, g, b],
+        hue, sat, light,
+        sentiment,
+      };
+    }
+
+    // ============================================================
+    // MapLibre 地图
+    // ============================================================
+    const map = new maplibregl.Map({
+      container: 'base-map',
+      style: {
+        version: 8,
+        sources: {
+          osm: {
+            type: 'raster',
+            tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+            tileSize: 256,
+            attribution: '© OSM',
+          },
+        },
+        layers: [{ id: 'osm-layer', type: 'raster', source: 'osm', minzoom: 0, maxzoom: 19 }],
+      },
+      center: HARBIN_CENTER,
+      zoom: DEFAULT_ZOOM,
+      minZoom: 10,
+      maxZoom: 18,
+      pitch: 0,
+      antialias: true,
+      attributionControl: false,
+    });
+
+    map.on('load', () => {
+      const canvas = map.getCanvas();
+      canvas.style.filter = 'brightness(0.5) saturate(0.5) hue-rotate(-10deg)';
+    });
+
+    // ============================================================
+    // deck.gl 自定义气味光点图层
+    // ============================================================
+    const { Deck, ScatterplotLayer, MapView } = deck;
+
+    function createScentPoint(lng, lat, text, colorInfo) {
+      return {
+        position: [lng, lat],
+        color: colorInfo.rgb,
+        hex: colorInfo.hex,
+        text,
+        createdAt: Date.now(),
+        radius: 600 + Math.random() * 500,
+        opacity: 0.7 + Math.random() * 0.25,
+        breathPhase: Math.random() * Math.PI * 2,
+        breathSpeed: 0.6 + Math.random() * 1.0,
+      };
+    }
+
+    function getScentData(now) {
+      return scentPoints
+        .filter(p => (now - p.createdAt) < MAX_SCENT_AGE)
+        .map(p => {
+          const age = (now - p.createdAt) / MAX_SCENT_AGE;
+          // 非线性衰减
+          const fade = age < 0.25 
+            ? 1 - age * 0.2 
+            : 1 - (0.05 + (age - 0.25) * (0.95 / 0.75));
+          const f = Math.max(0, fade);
+          return {
+            ...p,
+            displayRadius: p.radius * (0.4 + 0.6 * f),
+            displayOpacity: p.opacity * f * f,
+          };
+        });
+    }
+
+    // 自定义着色器的 ScatterplotLayer
+    class GlowScatterplotLayer extends ScatterplotLayer {
+      getShaders() {
+        const shaders = super.getShaders();
+        return {
+          ...shaders,
+          inject: {
+            'fs:#main-end': `
+              // ---- 弥散光晕自定义着色器 ----
+              float d = length(geometry.uv - vec2(0.5)) * 2.0;
+              
+              // 四层光晕合成
+              float core = 1.0 - smoothstep(0.0, 0.08, d);
+              float inner = 1.0 - smoothstep(0.03, 0.38, d);
+              float outer = 1.0 - smoothstep(0.15, 0.75, d);
+              float aura = 1.0 - smoothstep(0.45, 1.0, d);
+              
+              float glow = core * 0.95 + inner * 0.3 + outer * 0.1 + aura * 0.03;
+              glow = smoothstep(0.0, 0.015, glow);
+              
+              float finalAlpha = instanceOpacity * glow;
+              gl_FragColor = vec4(vColor.rgb, vColor.a * finalAlpha);
+            `,
+          },
+        };
+      }
+    }
+    GlowScatterplotLayer.layerName = 'GlowScatterplotLayer';
+
+    // 初始化 deck.gl
+    deckInstance = new Deck({
+      canvas: (() => {
+        const c = document.createElement('canvas');
+        c.id = 'deck-canvas';
+        c.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;z-index:1;pointer-events:none;';
+        document.getElementById('map-container').appendChild(c);
+        return c;
+      })(),
+      initialViewState: {
+        longitude: HARBIN_CENTER[0],
+        latitude: HARBIN_CENTER[1],
+        zoom: DEFAULT_ZOOM,
+        pitch: 0,
+        bearing: 0,
+      },
+      controller: false,
+      views: new MapView({ repeat: true }),
+      parameters: {
+        blend: true,
+        blendFunc: [WebGLRenderingContext.SRC_ALPHA, WebGLRenderingContext.ONE],
+        depthTest: false,
+        depthMask: false,
+      },
+      layers: [],
+    });
+
+    // 同步 MapLibre → deck.gl
+    function syncDeckView() {
+      const center = map.getCenter();
+      deckInstance.setProps({
+        viewState: {
+          longitude: center.lng,
+          latitude: center.lat,
+          zoom: map.getZoom(),
+          bearing: map.getBearing(),
+          pitch: map.getPitch(),
+        },
+      });
+    }
+    map.on('move', syncDeckView);
+    map.on('zoom', syncDeckView);
+    map.on('rotate', syncDeckView);
+    map.on('load', syncDeckView);
+
+    function updateDeckLayer() {
+      const now = Date.now();
+      const data = getScentData(now);
+      const zoom = map.getZoom();
+      const zf = Math.pow(2, zoom - 12);
+
+      const layer = new GlowScatterplotLayer({
+        id: 'scent-glow',
+        data,
+        pickable: false,
+        opacity: 1,
+        stroked: false,
+        filled: true,
+        radiusScale: 1,
+        radiusMinPixels: 6,
+        radiusMaxPixels: 180,
+        getPosition: d => d.position,
+        getRadius: d => d.displayRadius * zf * 0.55,
+        getFillColor: d => [
+          Math.round(d.color[0] * 255),
+          Math.round(d.color[1] * 255),
+          Math.round(d.color[2] * 255),
+          Math.round(d.displayOpacity * 220),
+        ],
+        parameters: {
+          blend: true,
+          blendFunc: [WebGLRenderingContext.SRC_ALPHA, WebGLRenderingContext.ONE],
+          depthTest: false,
+          depthMask: false,
+        },
+      });
+
+      deckInstance.setProps({ layers: [layer] });
+    }
+
+    // ============================================================
+    // 动画循环
+    // ============================================================
+    function animate() {
+      updateDeckLayer();
+      animationId = requestAnimationFrame(animate);
+    }
+
+    // 定时清理过期点
+    setInterval(() => {
+      const now = Date.now();
+      const before = scentPoints.length;
+      scentPoints = scentPoints.filter(p => (now - p.createdAt) < MAX_SCENT_AGE);
+      if (scentPoints.length < before) updateDeckLayer();
+    }, CLEANUP_INTERVAL);
+
+    // ============================================================
+    // 交互
+    // ============================================================
+    const inputPanel = document.getElementById('input-panel');
+    const scentInput = document.getElementById('scent-input');
+    const charCount = document.getElementById('char-count');
+    const btnConfirm = document.getElementById('btn-confirm');
+    const btnCancel = document.getElementById('btn-cancel');
+    const locLabel = document.getElementById('loc-label');
+    const hint = document.getElementById('hint');
+    const aiStatus = document.getElementById('ai-status');
+    const zoomInfo = document.getElementById('zoom-info');
+
+    map.on('click', (e) => {
+      pendingLngLat = [e.lngLat.lng, e.lngLat.lat];
+      locLabel.textContent = `位置：${e.lngLat.lng.toFixed(4)}, ${e.lngLat.lat.toFixed(4)}`;
+      hint.style.display = 'none';
+      inputPanel.classList.add('active');
+      scentInput.value = '';
+      charCount.textContent = '0';
+      btnConfirm.disabled = true;
+      setTimeout(() => scentInput.focus(), 100);
+    });
+
+    scentInput.addEventListener('input', () => {
+      const len = scentInput.value.length;
+      charCount.textContent = len;
+      btnConfirm.disabled = len === 0 || len > 20;
+    });
+
+    btnCancel.addEventListener('click', () => {
+      inputPanel.classList.remove('active');
+      pendingLngLat = null;
+      hint.style.display = 'block';
+    });
+
+    btnConfirm.addEventListener('click', () => {
+      const text = scentInput.value.trim();
+      if (!text || !pendingLngLat) return;
+
+      // 文字 → 颜色（本地算法，毫秒级）
+      const colorInfo = textToColor(text);
+      const point = createScentPoint(pendingLngLat[0], pendingLngLat[1], text, colorInfo);
+      scentPoints.push(point);
+
+      // 即时视觉反馈：短暂高亮
+      aiStatus.style.display = 'block';
+      aiStatus.textContent = `✨ ${text} → ${colorInfo.hex}`;
+      aiStatus.style.background = `${colorInfo.hex}44`;
+      aiStatus.style.borderLeft = `3px solid ${colorInfo.hex}`;
+      setTimeout(() => { aiStatus.style.display = 'none'; }, 2000);
+
+      inputPanel.classList.remove('active');
+      hint.style.display = 'block';
+      pendingLngLat = null;
+      updateDeckLayer();
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && inputPanel.classList.contains('active')) {
+        inputPanel.classList.remove('active');
+        pendingLngLat = null;
+        hint.style.display = 'block';
+      }
+      // Enter 提交
+      if (e.key === 'Enter' && inputPanel.classList.contains('active') && !btnConfirm.disabled) {
+        btnConfirm.click();
+      }
+    });
+
+    // 缩放信息
+    map.on('zoom', () => {
+      const z = map.getZoom();
+      let desc = z < 12 ? '城市全景 · 气味色块云' : z < 14.5 ? '街区视野 · 气味光晕弥散' : '街道视角 · 气味细节呼吸';
+      zoomInfo.textContent = `zoom ${z.toFixed(1)} · ${desc}`;
+    });
+
+    // ============================================================
+    // 预设气味点（哈尔滨地标）
+    // ============================================================
+    const PRESETS = [
+      { lng: 126.636, lat: 45.771, text: '中央大街的烤红肠', hex: '#FF8C42' },
+      { lng: 126.623, lat: 45.775, text: '松花江边的风', hex: '#6B9BD2' },
+      { lng: 126.640, lat: 45.768, text: '马迭尔的冰棍', hex: '#87CEEB' },
+      { lng: 126.630, lat: 45.760, text: '丁香花的味道', hex: '#DDA0DD' },
+      { lng: 126.645, lat: 45.762, text: '老道外的咖啡香', hex: '#8B6914' },
+      { lng: 126.618, lat: 45.758, text: '太阳岛的青草', hex: '#5DAA68' },
+      { lng: 126.655, lat: 45.755, text: '夜市的热闹烟火', hex: '#FF6347' },
+      { lng: 126.610, lat: 45.770, text: '雪后的清新空气', hex: '#B0E0E6' },
+      { lng: 126.634, lat: 45.753, text: '刚出锅的锅包肉', hex: '#F4A460' },
+      { lng: 126.628, lat: 45.765, text: '索菲亚教堂的钟声', hex: '#B8860B' },
+    ];
+
+    PRESETS.forEach(p => {
+      scentPoints.push(createScentPoint(p.lng, p.lat, p.text, { rgb: hexToRgb(p.hex), hex: p.hex, hue: 0, sat: 0.5, light: 0.5, sentiment: 'neutral' }));
+    });
+
+    // ============================================================
+    // 启动
+    // ============================================================
+    updateDeckLayer();
+    animate();
+
+    console.log('%c🌿 七维地图 · 哈尔滨 %c已就绪',
+      'font-size:18px;color:#c44dff;', 'font-size:12px;color:#aaa;');
+    console.log('%c💡 点击地图任意位置标记气味  |  输入任意文字自动匹配颜色  |  光点随时间消散',
+      'color:#ff6b9d;font-size:13px;');
+    console.log('%c🎨 已预置 ' + PRESETS.length + ' 个哈尔滨地标气味点', 'color:#aaa;');
+  </script>
+</body>
+</html>
