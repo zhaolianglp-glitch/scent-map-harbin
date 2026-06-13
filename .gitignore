@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.trae/
+*.tsbuildinfo
+gen_ladybug.py
+gen_ladybug.sh
